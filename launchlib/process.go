@@ -70,7 +70,7 @@ func SetResourceLimits(config ResourceConfig) error {
 		}
 	}
 	if config.MaxProcesses > 0 {
-		if err := setRlimit(syscall.RLIMIT_NPROC, config.MaxProcesses); err != nil {
+		if err := setRlimit(rlimitNproc, config.MaxProcesses); err != nil {
 			return fmt.Errorf("failed to set RLIMIT_NPROC to %d: %w", config.MaxProcesses, err)
 		}
 	}

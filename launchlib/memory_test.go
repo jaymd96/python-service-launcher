@@ -168,19 +168,20 @@ func TestComputeLimitsCgroupAware(t *testing.T) {
 	}
 
 	// effective = 1073741824 * 0.75 * 0.90 = 724566425
-	expectedEffective := uint64(float64(1073741824) * 0.75 * 0.90)
+	cgroupF := float64(1073741824)
+	expectedEffective := uint64(cgroupF * 0.75 * 0.90)
 	if limits.EffectiveLimitBytes != expectedEffective {
 		t.Errorf("expected effective limit %d, got %d", expectedEffective, limits.EffectiveLimitBytes)
 	}
 
 	// soft warn = 1073741824 * 0.85 = 912680550
-	expectedSoftWarn := uint64(float64(1073741824) * 0.85)
+	expectedSoftWarn := uint64(cgroupF * 0.85)
 	if limits.SoftWarnBytes != expectedSoftWarn {
 		t.Errorf("expected soft warn %d, got %d", expectedSoftWarn, limits.SoftWarnBytes)
 	}
 
 	// hard kill = 1073741824 * 0.95 = 1020054732
-	expectedHardKill := uint64(float64(1073741824) * 0.95)
+	expectedHardKill := uint64(cgroupF * 0.95)
 	if limits.HardKillBytes != expectedHardKill {
 		t.Errorf("expected hard kill %d, got %d", expectedHardKill, limits.HardKillBytes)
 	}
