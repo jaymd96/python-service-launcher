@@ -1,0 +1,6 @@
+{
+  "name": "service-launcher",
+  "version": "0.2.0",
+  "description": "Container-aware Python service launcher with memory management and RSS watchdog",
+  "skills": "./skills/"
+}
