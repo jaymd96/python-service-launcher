@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,19 +65,10 @@ type LaunchResult struct {
 	Duration time.Duration
 }
 
-// Launcher orchestrates the full lifecycle of launching a Python process:
-//  1. Read and merge configs
-//  2. Compute memory limits
-//  3. Create required directories
-//  4. Set resource limits
-//  5. Build command and environment
-//  6. Fork the process
-//  7. Start the RSS watchdog
-//  8. Forward signals
-//  9. Wait for exit
+// Launcher orchestrates the full lifecycle of launching a Python process.
 type Launcher struct {
 	params  LauncherParams
-	logger  *log.Logger
+	logger  *Logger
 	limiter *MemoryLimiter
 }
 
@@ -93,7 +83,9 @@ func NewLauncher(params LauncherParams) *Launcher {
 	if params.CustomConfigPath == "" {
 		params.CustomConfigPath = defaultCustomConfigPath
 	}
-	logger := log.New(params.Stdout, "", log.LstdFlags|log.Lmicroseconds)
+	// Logger will be re-initialized once config is loaded (for JSON mode).
+	// For now, use text mode.
+	logger := NewLogger(params.Stdout, DefaultLoggingConfig())
 	return &Launcher{
 		params:  params,
 		logger:  logger,
@@ -119,7 +111,16 @@ func (l *Launcher) Launch() (LaunchResult, error) {
 	}
 
 	merged := MergeConfigs(staticConfig, customConfig)
+
+	// Re-initialize logger with config-specified settings
+	l.logger = NewLogger(l.params.Stdout, merged.Logging)
+
 	l.logConfig(merged)
+
+	// --- CPU detection ---
+	cpuCount := DetectCPUCount(merged.CPU, cpuFilesystem())
+	merged.EffectiveCPUCount = cpuCount
+	l.logger.Printf("CPU: detected %d effective CPUs", cpuCount)
 
 	// --- 2. Compute memory limits ---
 
@@ -166,6 +167,19 @@ func (l *Launcher) Launch() (LaunchResult, error) {
 	cmdArgs := BuildCommandArgs(merged)
 	env := BuildProcessEnv(merged, limits, l.params.ServiceName, l.params.ServiceVersion)
 
+	// Overlay CPU env vars
+	cpuEnv := BuildCPUEnv(cpuCount)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			// Only set CPU vars if not already overridden
+			delete(cpuEnv, parts[0])
+		}
+	}
+	for k, v := range cpuEnv {
+		env = append(env, k+"="+v)
+	}
+
 	// Resolve the executable path
 	executablePath := l.resolvePath(cmdArgs[0])
 	cmdArgs[0] = executablePath
@@ -194,7 +208,16 @@ func (l *Launcher) Launch() (LaunchResult, error) {
 	}
 	defer RemovePidFile(pidPath)
 
-	// --- 7. Start the RSS watchdog ---
+	// --- 7. Start readiness probe ---
+
+	readinessCtx, readinessCancel := context.WithCancel(context.Background())
+	defer readinessCancel()
+
+	probe := NewReadinessProbe(merged.Readiness, l.logger)
+	probe.Start(readinessCtx)
+	probe.SetReady()
+
+	// --- 8. Start the RSS watchdog ---
 
 	watchdogCtx, watchdogCancel := context.WithCancel(context.Background())
 	defer watchdogCancel()
@@ -211,14 +234,14 @@ func (l *Launcher) Launch() (LaunchResult, error) {
 		watchdogTriggered <- false
 	}
 
-	// --- 8. Forward signals ---
+	// --- 9. Forward signals ---
 
 	sigChan := ForwardSignals(pid)
 	defer func() {
 		close(sigChan)
 	}()
 
-	// --- 9. Launch subprocesses ---
+	// --- 10. Launch subprocesses ---
 
 	var subCmds []*exec.Cmd
 	for _, sub := range merged.SubProcesses {
@@ -243,10 +266,14 @@ func (l *Launcher) Launch() (LaunchResult, error) {
 		subCmds = append(subCmds, subCmd)
 	}
 
-	// --- 10. Wait for primary process exit ---
+	// --- 11. Wait for primary process exit ---
 
 	waitErr := cmd.Wait()
 	watchdogCancel() // stop the watchdog
+	readinessCancel()
+
+	// Drain readiness probe before cleanup
+	probe.Drain()
 
 	duration := time.Since(startTime)
 

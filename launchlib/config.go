@@ -27,6 +27,18 @@ const (
 	ConfigTypePython = "python"
 )
 
+// LaunchMode controls how the process is started.
+type LaunchMode string
+
+const (
+	LaunchModePEX     LaunchMode = "pex"
+	LaunchModeModule  LaunchMode = "module"
+	LaunchModeScript  LaunchMode = "script"
+	LaunchModeUvicorn LaunchMode = "uvicorn"
+	LaunchModeGunicorn LaunchMode = "gunicorn"
+	LaunchModeCommand LaunchMode = "command"
+)
+
 // MemoryMode controls how the launcher manages memory limits for the Python process.
 type MemoryMode string
 
@@ -42,18 +54,26 @@ const (
 	MemoryModeUnmanaged MemoryMode = "unmanaged"
 )
 
+// PathsConfig allows customizing the standard directory layout.
+type PathsConfig struct {
+	StaticConfig string `yaml:"staticConfig,omitempty"` // Default: service/bin/launcher-static.yml
+	PidFile      string `yaml:"pidFile,omitempty"`      // Default: var/run/%s.pid (%s = service name)
+	TmpDir       string `yaml:"tmpDir,omitempty"`       // Default: var/data/tmp
+	Manifest     string `yaml:"manifest,omitempty"`     // Default: deployment/manifest.yml
+}
+
 // StaticLauncherConfig represents the immutable configuration generated at build time.
-// This is written to service/bin/launcher-static.yml by the Pants SLS packaging plugin
-// and should never be modified after distribution.
 type StaticLauncherConfig struct {
-	// ConfigType must be "python".
-	ConfigType string `yaml:"configType" validate:"nonzero"`
+	// ConfigType must be "python" (or empty, which defaults to "python").
+	ConfigType string `yaml:"configType"`
 
 	// ConfigVersion must be 1.
 	ConfigVersion int `yaml:"configVersion" validate:"nonzero"`
 
-	// Executable is the path to the PEX binary, relative to the distribution root.
-	// Example: "service/bin/my-service.pex"
+	// LaunchMode controls how the process is started. Default: "pex".
+	LaunchMode LaunchMode `yaml:"launchMode,omitempty"`
+
+	// Executable is the path to the binary/script, relative to the distribution root.
 	Executable string `yaml:"executable" validate:"nonzero"`
 
 	// PythonPath optionally specifies the path to a Python interpreter.
@@ -93,8 +113,19 @@ type StaticLauncherConfig struct {
 	Watchdog WatchdogConfig `yaml:"watchdog,omitempty"`
 
 	// SubProcesses defines additional processes launched alongside the primary.
-	// Useful for sidecar patterns within a single SLS service (metrics exporters, etc).
 	SubProcesses []SubProcessConfig `yaml:"subProcesses,omitempty"`
+
+	// Paths customizes the standard directory layout.
+	Paths PathsConfig `yaml:"paths,omitempty"`
+
+	// Logging controls launcher log output.
+	Logging LoggingConfig `yaml:"logging,omitempty"`
+
+	// Readiness controls the readiness probe.
+	Readiness ReadinessConfig `yaml:"readiness,omitempty"`
+
+	// CPU controls CPU detection and thread pool sizing.
+	CPU CPUConfig `yaml:"cpu,omitempty"`
 }
 
 // MemoryConfig controls memory limit detection and enforcement.
@@ -210,20 +241,26 @@ type CustomLauncherConfig struct {
 
 // MergedConfig is the resolved configuration after combining static and custom configs.
 type MergedConfig struct {
-	Executable  string
-	PythonPath  string
-	EntryPoint  string
-	Args        []string
-	Env         map[string]string
-	PythonOpts  []string
-	Memory      MemoryConfig
-	Watchdog    WatchdogConfig
-	Resources   ResourceConfig
-	Dirs        []string
+	LaunchMode   LaunchMode
+	Executable   string
+	PythonPath   string
+	EntryPoint   string
+	Args         []string
+	Env          map[string]string
+	PythonOpts   []string
+	Memory       MemoryConfig
+	Watchdog     WatchdogConfig
+	Resources    ResourceConfig
+	Dirs         []string
 	SubProcesses []SubProcessConfig
+	Paths        PathsConfig
+	Logging      LoggingConfig
+	Readiness    ReadinessConfig
+	CPU          CPUConfig
 
 	// Computed fields
 	EffectiveMemoryLimitBytes uint64
+	EffectiveCPUCount         int
 	IsContainer               bool
 	CgroupVersion             int // 1 or 2, 0 if not in container
 }
@@ -292,7 +329,13 @@ func MergeConfigs(
 	static StaticLauncherConfig,
 	custom CustomLauncherConfig,
 ) MergedConfig {
+	launchMode := static.LaunchMode
+	if launchMode == "" {
+		launchMode = LaunchModePEX
+	}
+
 	merged := MergedConfig{
+		LaunchMode:   launchMode,
 		Executable:   static.Executable,
 		PythonPath:   static.PythonPath,
 		EntryPoint:   static.EntryPoint,
@@ -303,6 +346,10 @@ func MergeConfigs(
 		Resources:    static.Resources,
 		Dirs:         static.Dirs,
 		SubProcesses: static.SubProcesses,
+		Paths:        static.Paths,
+		Logging:      static.Logging,
+		Readiness:    static.Readiness,
+		CPU:          static.CPU,
 	}
 
 	// Merge environment: static as base, custom overrides
@@ -352,7 +399,8 @@ func readCustomConfig(path string, stdout io.Writer) (CustomLauncherConfig, erro
 }
 
 func validateStaticConfig(config StaticLauncherConfig) error {
-	if config.ConfigType != ConfigTypePython {
+	// Empty configType defaults to "python"
+	if config.ConfigType != "" && config.ConfigType != ConfigTypePython {
 		return fmt.Errorf("expected configType %q, got %q", ConfigTypePython, config.ConfigType)
 	}
 	if config.ConfigVersion != 1 {

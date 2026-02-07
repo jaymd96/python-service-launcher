@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          COMMIT=${GITHUB_SHA::8}
+          OUTPUT=python-service-launcher-${{ matrix.goos }}-${{ matrix.goarch }}
+          go build -ldflags "-X main.version=$VERSION -X main.gitCommit=$COMMIT" \
+            -o $OUTPUT ./cmd/python-service-launcher
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-service-launcher-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: python-service-launcher-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "**/*"
+          generate_release_notes: true

@@ -17,7 +17,6 @@ package launchlib
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -62,7 +61,7 @@ type RSSWatchdog struct {
 	pid    int
 	limits MemoryLimits
 	config WatchdogConfig
-	logger *log.Logger
+	logger *Logger
 	state  WatchdogState
 
 	// For testing: override the RSS reader
@@ -70,7 +69,7 @@ type RSSWatchdog struct {
 }
 
 // NewRSSWatchdog creates a new watchdog for the given process.
-func NewRSSWatchdog(pid int, limits MemoryLimits, config WatchdogConfig, logger *log.Logger) *RSSWatchdog {
+func NewRSSWatchdog(pid int, limits MemoryLimits, config WatchdogConfig, logger *Logger) *RSSWatchdog {
 	return &RSSWatchdog{
 		pid:     pid,
 		limits:  limits,

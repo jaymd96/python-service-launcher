@@ -123,7 +123,11 @@ func BuildProcessEnv(config MergedConfig, limits MemoryLimits, serviceName, serv
 		env[k] = v
 	}
 
-	// Always set these SLS metadata variables
+	// Generic service metadata (always set)
+	env["SERVICE_NAME"] = serviceName
+	env["SERVICE_VERSION"] = serviceVersion
+
+	// SLS metadata (kept for SLS-based deployments)
 	env["SLS_SERVICE_NAME"] = serviceName
 	env["SLS_SERVICE_VERSION"] = serviceVersion
 
@@ -131,7 +135,7 @@ func BuildProcessEnv(config MergedConfig, limits MemoryLimits, serviceName, serv
 	setDefault(env, "PYTHONDONTWRITEBYTECODE", "1")
 	setDefault(env, "PYTHONUNBUFFERED", "1")
 
-	// Set tmpdir to var/data/tmp for consistency with go-java-launcher
+	// Set tmpdir
 	setDefault(env, "TMPDIR", "var/data/tmp")
 
 	// Convert back to []string
@@ -148,37 +152,70 @@ func setDefault(env map[string]string, key, value string) {
 	}
 }
 
-// BuildCommandArgs constructs the full command line for launching the PEX.
+// BuildCommandArgs constructs the full command line based on LaunchMode.
 //
-// The command structure is:
-//
-//	[pythonPath] [pythonOpts...] executable.pex [--entry-point entryPoint] [args...]
-//
-// If pythonPath is empty, the PEX is executed directly (it has a shebang).
-// If entryPoint is empty, the PEX's baked-in entry point is used.
+// Supported modes:
+//   - pex:      [pythonPath] [pythonOpts...] executable.pex [args...]
+//   - module:   [pythonPath] [pythonOpts...] -m <executable> [args...]
+//   - script:   [pythonPath] [pythonOpts...] <executable> [args...]
+//   - uvicorn:  [pythonPath] [pythonOpts...] -m uvicorn <executable>:<entryPoint> [args...]
+//   - gunicorn: [pythonPath] [pythonOpts...] -m gunicorn <executable>:<entryPoint> [args...]
+//   - command:  <executable> [args...] (no Python wrapper)
 func BuildCommandArgs(config MergedConfig) []string {
-	var args []string
+	switch config.LaunchMode {
+	case LaunchModeCommand:
+		return append([]string{config.Executable}, config.Args...)
 
-	if config.PythonPath != "" {
-		resolvedPython := ResolveEnvVarPath(config.PythonPath)
-		args = append(args, resolvedPython)
+	case LaunchModeModule:
+		return buildPythonArgs(config, "-m", config.Executable)
 
-		// Python interpreter flags go before the script
-		args = append(args, config.PythonOpts...)
+	case LaunchModeScript:
+		return buildPythonArgs(config, "", config.Executable)
 
-		// The PEX file
-		args = append(args, config.Executable)
-	} else {
-		// Execute PEX directly (relies on its shebang line)
-		args = append(args, config.Executable)
+	case LaunchModeUvicorn:
+		appSpec := config.Executable
+		if config.EntryPoint != "" {
+			appSpec = config.Executable + ":" + config.EntryPoint
+		}
+		return buildPythonArgs(config, "-m", "uvicorn", appSpec)
+
+	case LaunchModeGunicorn:
+		appSpec := config.Executable
+		if config.EntryPoint != "" {
+			appSpec = config.Executable + ":" + config.EntryPoint
+		}
+		return buildPythonArgs(config, "-m", "gunicorn", appSpec)
+
+	default: // LaunchModePEX or empty
+		var args []string
+		if config.PythonPath != "" {
+			resolvedPython := ResolveEnvVarPath(config.PythonPath)
+			args = append(args, resolvedPython)
+			args = append(args, config.PythonOpts...)
+			args = append(args, config.Executable)
+		} else {
+			args = append(args, config.Executable)
+		}
+		args = append(args, config.Args...)
+		return args
 	}
+}
 
-	// Entry point override (PEX supports -m style override via PEX_MODULE env var,
-	// but we can also pass it as a flag if the PEX is configured for it)
-	// Note: this is typically handled via PEX_MODULE env var instead
-	// args = append(args, config.Args...)
+// buildPythonArgs is a helper that constructs [python] [opts...] [extraArgs...] [config.Args...]
+func buildPythonArgs(config MergedConfig, extraArgs ...string) []string {
+	var args []string
+	pythonPath := config.PythonPath
+	if pythonPath == "" {
+		pythonPath = "python3"
+	}
+	args = append(args, ResolveEnvVarPath(pythonPath))
+	args = append(args, config.PythonOpts...)
+	for _, a := range extraArgs {
+		if a != "" {
+			args = append(args, a)
+		}
+	}
 	args = append(args, config.Args...)
-
 	return args
 }
 

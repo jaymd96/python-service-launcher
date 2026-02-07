@@ -141,8 +141,12 @@ func BuildMemoryEnv(config MergedConfig, limits MemoryLimits) map[string]string 
 		return env
 	}
 
-	// Expose limits to the Python process so application code can size caches,
-	// connection pools, worker counts, etc.
+	// Generic memory env vars
+	env["MEMORY_LIMIT_BYTES"] = strconv.FormatUint(limits.EffectiveLimitBytes, 10)
+	env["CGROUP_LIMIT_BYTES"] = strconv.FormatUint(limits.CgroupLimitBytes, 10)
+	env["MEMORY_MODE"] = string(config.Memory.Mode)
+
+	// SLS-prefixed aliases (kept for backwards compat in SLS deployments)
 	env["SLS_MEMORY_LIMIT_BYTES"] = strconv.FormatUint(limits.EffectiveLimitBytes, 10)
 	env["SLS_CGROUP_LIMIT_BYTES"] = strconv.FormatUint(limits.CgroupLimitBytes, 10)
 	env["SLS_MEMORY_MODE"] = string(config.Memory.Mode)
@@ -163,13 +167,14 @@ func BuildMemoryEnv(config MergedConfig, limits MemoryLimits) map[string]string 
 	// memory visibility for the watchdog.
 	env["PYTHONMALLOC"] = "malloc"
 
-	// Limit thread pools in common numeric libraries.
-	// Each thread in these pools allocates its own memory for intermediate results.
+	// Thread pool limiting is now handled by BuildCPUEnv in cpu.go.
+	// For backwards compat, we still set these based on runtime.NumCPU()
+	// if the caller doesn't use the CPU detection path.
 	numCPU := strconv.Itoa(runtime.NumCPU())
-	env["OMP_NUM_THREADS"] = numCPU
-	env["MKL_NUM_THREADS"] = numCPU
-	env["OPENBLAS_NUM_THREADS"] = numCPU
-	env["NUMEXPR_MAX_THREADS"] = numCPU
+	setDefaultMap(env, "OMP_NUM_THREADS", numCPU)
+	setDefaultMap(env, "MKL_NUM_THREADS", numCPU)
+	setDefaultMap(env, "OPENBLAS_NUM_THREADS", numCPU)
+	setDefaultMap(env, "NUMEXPR_MAX_THREADS", numCPU)
 
 	return env
 }
@@ -251,6 +256,13 @@ func (m *MemoryLimiter) readSystemMemory() (uint64, error) {
 	}
 
 	return 0, fmt.Errorf("MemTotal not found in %s", procMemInfoPath)
+}
+
+// setDefaultMap sets a key in a map only if it's not already present.
+func setDefaultMap(m map[string]string, key, value string) {
+	if _, exists := m[key]; !exists {
+		m[key] = value
+	}
 }
 
 // relPath strips the leading "/" from an absolute path for use with fs.FS.

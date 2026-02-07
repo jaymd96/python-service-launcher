@@ -54,6 +54,7 @@ func main() {
 	// Flags
 	staticConfig := flag.String("static-config", "", "Path to static launcher config (default: service/bin/launcher-static.yml)")
 	customConfig := flag.String("custom-config", "", "Path to custom launcher config (default: var/conf/launcher-custom.yml)")
+	distRootFlag := flag.String("dist-root", "", "Distribution root directory (default: auto-detect from executable path)")
 	mode := flag.String("mode", "startup", "Launch mode: startup, check, status")
 	checkMode := flag.Bool("check", false, "Run health check instead of starting the service")
 	statusMode := flag.Bool("status", false, "Check if the service is running")
@@ -78,14 +79,19 @@ func main() {
 	}
 
 	// Determine distribution root.
-	// The launcher binary lives at service/bin/<arch>/python-service-launcher,
-	// so the dist root is three directories up.
-	execPath, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to determine executable path: %v\n", err)
-		os.Exit(1)
+	var distRoot string
+	if *distRootFlag != "" {
+		distRoot = *distRootFlag
+	} else {
+		// The launcher binary lives at service/bin/<arch>/python-service-launcher,
+		// so the dist root is three directories up.
+		execPath, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to determine executable path: %v\n", err)
+			os.Exit(1)
+		}
+		distRoot = filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(execPath))))
 	}
-	distRoot := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(execPath))))
 
 	// Change to dist root so all relative paths resolve correctly
 	if err := os.Chdir(distRoot); err != nil {
